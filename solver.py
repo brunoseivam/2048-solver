@@ -7,12 +7,39 @@ from selenium.webdriver.common.action_chains import ActionChains
 
 URL = "http://gabrielecirulli.github.io/2048"
 NROWS,NCOLS = 4,4
+NTILES = NROWS*NCOLS
+
+# Helper functions
+
+def parse_tiles(elems):
+    tiles = []
+    for e in elems:
+        pos = e.get_attribute("class").split(' ')[2]
+        row = int(pos[-1])-1
+        col = int(pos[-3])-1
+        val = int(e.text) if e.text else 0
+        tiles.append((row,col,val))
+    return tiles
+
+def getAllTiles(d):
+    elems = d.find_elements_by_xpath("//div[contains(@class,'tile-position')]")
+    return parse_tiles(elems)
+
+def getNewTile(d):
+    elem = d.find_element_by_css_selector(".tile-new")
+
+    while not elem.text:
+        continue
+
+    #print "new:",elem.text,elem.get_attribute("class")
+    return parse_tiles([elem])
 
 # Class that represents an instance of a game grid
 class grid:
 
     # Create an empty 4 by 4 grid
     def __init__(self, driver = None):
+        self.container = None
         self.data = [[0]*NCOLS for i in range(NROWS)]
 
         if driver:
@@ -21,9 +48,23 @@ class grid:
     def __getitem__(self,i):
         return self.data[i]
 
+    def __eq__(self,g):
+        for r in range(NROWS):
+            for c in range(NCOLS):
+                if self[r][c] != g[r][c]:
+                    return False
+        return True
+
     def __repr__(self):
         rows = ["".join(["%5d " % elem for elem in row]) for row in self.data]
-        return "\n".join(rows)+"\n"
+        return "\n"+"\n".join(rows)+"\n"
+
+    # Return a duplicate
+    def dup(self):
+        g = grid()
+        g.data = [row[:] for row in self.data]
+        g.container = self.container
+        return g
 
     # Rotate the underlying matrix 90 degrees clockwise
     def rotateCW(self,turns=1):
@@ -36,39 +77,32 @@ class grid:
             turns -= 1
         return self
 
-    # Return a duplicate
-    def dup(self):
-        g = grid()
-        g.data = [row[:] for row in self.data]
-        return g
+    # Set the specified tiles' values
+    def setTiles(self,tilesList):
+        for row,col,value in tilesList:
+            self.data[row][col] = value
 
     # Read values from webpage (using webdriver)
     def read(self, driver):
-        d = driver
-        tilePos = ".tile-position-%d-%d"
-        for r in range(NROWS):
-            for c in range(NCOLS):
-                tiles = d.find_elements_by_css_selector(tilePos % (c+1,r+1))
-                if not tiles:
-                    self.data[r][c] = 0
-                elif len(tiles) > 1:
-                    for t in tiles:
-                        if "merged" in t.get_attribute("class"):
-                            self.data[r][c] = int(t.text)
-                else:
-                    self.data[r][c] = int(tiles[0].text)
+        self.setTiles(getAllTiles(driver))
+
+    # Update values
+    def update(self,driver):
+        self.setTiles(getNewTile(driver))
 
     # "Move" the grid, returning the grid configuration after 'pressing' LEFT
     def move(self, direction):
         g = self.dup()
 
+        merges = moveQty = 0
+
         rotDict = {"left":(0,0),"down":(1,3),"right":(2,2),"up":(3,1)}
 
         g.rotateCW(rotDict[direction][0])
 
-        moved = False
         for r in range(NROWS):
 
+            merged = [False]*NCOLS
             # Move everything non-zero to the left (except 1st elem)
             for c in range(1,NCOLS):
 
@@ -79,22 +113,26 @@ class grid:
                 i = c
 
                 while i > 0:
-                    if g[r][i-1] == 0:              # Just move left
+
+                    # Just move left
+                    if g[r][i-1] == 0:
+                        moveQty += g[r][i]*2
                         g[r][i-1],g[r][i] = g[r][i],g[r][i-1]
                         i = i - 1
-                        moved = True
 
-                    elif g[r][i-1] == g[r][i]:      # Merge and stop
+                    # Merge and stop
+                    elif g[r][i-1] == g[r][i] and not merged[i-1]:
+                        merged[i-1] = True
                         g[r][i-1] += g[r][i]
                         g[r][i] = 0
-                        moved = True
+                        merges += 1
                         break
 
                     else:                           # Just stop
                         break
 
         g.rotateCW(rotDict[direction][1])
-        return g,moved
+        return g,merges,moveQty
 
     def grade(self):
         count = 0
@@ -128,7 +166,12 @@ class grid:
                     neigh += 1
 
         neigh /= 2
-        return (count,neigh,maxElem)
+
+        count = (NTILES-count)*1.0/NTILES
+        neigh = neigh*1.0/24
+        maxElem = maxElem*1.0/2048
+
+        return 0.5*count+0.3*maxElem+0.2*neigh
 
 
 drv = Firefox()
@@ -142,24 +185,50 @@ acts = [ActionChains(drv).send_keys(Keys.LEFT),
 
 actDict = dict(zip(dirs,acts))
 
+curGrid = grid(drv)
+
+#print curGrid
+
 while True:
-    curGrid = grid(drv)
-
-    grades = []
+    # Build a list with all possible moves along with the respective grades
+    moves = []
     for d in dirs:
-        g,moved = curGrid.move(d)
+        g,merges,moveQty = curGrid.move(d)
 
-        if moved:
-            grades.append((g.grade(),d))
+        #print merges,moveQty
 
-    print grades
+        if moveQty:
+            #moves.append((g.grade(),d,g))
+            moves.append((merges,moveQty,d,g))
 
-    grades = sorted(grades,key=lambda g: g[0][2],reverse=True)
-    grades = sorted(grades,key=lambda g: g[0][1],reverse=True)
-    grades = sorted(grades,key=lambda g: g[0][0])
+    # Check game ended
+    if not moves:
+        print "I lost..."
+        break
 
-    print grades
-    actDict[grades[0][1]].perform()
-    #time.sleep(0.1)
 
+    # Choose the best move (order by grade)
+    moves.sort(key=lambda g:g[0],reverse=True)
+    moves.sort(key=lambda g:g[1])
+
+    _,_,action,newGrid = moves[0]
+
+    #for m in moves:
+    #    print m[0:2]
+
+    #x = raw_input()
+
+    # Perform the chosen move
+    actDict[action].perform()
+
+    # Read new tile
+    curGrid = newGrid
+    curGrid.update(drv)
+
+    #print curGrid
+    #if not (curGrid == grid(drv)):
+    #    print "fail"
+    #    break
+
+#drv.close()
 
