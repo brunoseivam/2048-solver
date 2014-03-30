@@ -6,8 +6,6 @@ from selenium.webdriver.common.action_chains import ActionChains
 
 URL = "http://gabrielecirulli.github.io/2048"
 
-
-
 SIZE = 4
 LEFT=0
 UP=1
@@ -48,6 +46,8 @@ class Grid:
     # Create an empty SIZE by SIZE grid
     def __init__(self, driver = None):
         self.data = [[0]*SIZE for i in range(SIZE)]
+        self.ended = False
+        self.won = False
 
         if driver:
             self.read(driver)
@@ -71,6 +71,10 @@ class Grid:
     # Read values from webpage (using webdriver)
     def read(self, d):
         tiles = d.execute_script("return eval('('+window.localStorage.gameState+')')")
+
+        if not tiles:
+            self.ended = True
+            return
 
         for column in tiles['grid']['cells']:
             for cell in column:
@@ -114,12 +118,14 @@ class Game:
     def __init__(self, h = None):
         self.drv = Firefox()
 
+        self.heuristic = h if h else self.defaultHeuristic
+
         # Map a direction to an action
-        self.ACTION = dict(zip(g2048.DIRECTIONS,
-                  (ActionChains(drv).send_keys(Keys.LEFT),
-                   ActionChains(drv).send_keys(Keys.UP),
-                   ActionChains(drv).send_keys(Keys.RIGHT),
-                   ActionChains(drv).send_keys(Keys.DOWN))))
+        self.ACTION = dict(zip(DIRECTIONS,
+                  (ActionChains(self.drv).send_keys(Keys.LEFT),
+                   ActionChains(self.drv).send_keys(Keys.UP),
+                   ActionChains(self.drv).send_keys(Keys.RIGHT),
+                   ActionChains(self.drv).send_keys(Keys.DOWN))))
 
         self.drv.get(URL)
         self.grid = Grid(self.drv)
@@ -127,13 +133,7 @@ class Game:
     def play(self):
         while True:
             moves = self.grid.allMoves()
-
-            # Check if game ended
-            if not moves:
-                print "I lost..."
-                break
-
-            moves = [(d,g,valDensity(g)) for d,g in moves]
+            moves = [(d,g,self.heuristic(self.grid,g)) for d,g in moves]
 
             # Choose the best move
             moves.sort(key=lambda g:g[-1],reverse=True)
@@ -141,28 +141,65 @@ class Game:
             print [(d,v) for d,_,v in moves]
 
             # Perform the chosen move
-            ACTION[moves[0][0]].perform()
+            self.ACTION[moves[0][0]].perform()
 
             # Read new grid
             self.grid = Grid(self.drv)
 
+            # Check if game ended
+            if self.grid.ended:
+                if not self.grid.won:
+                    print "I lost... ='("
+                else:
+                    print "I WON!!!1!!11!"
+                break
+
         self.drv.close()
 
+    def defaultHeuristic(self,prevGrid,nextGrid):
+        grid = nextGrid
+        maxTile = 0
+        nTiles = 0
+        nZeroes = 0
+        totValue = 0
+        nNeighbours = 0
 
-def valDensity(grid):
+        for row in range(SIZE):
+            for col in range(SIZE):
+                elem = grid[row][col]
 
-    nTiles = 0
-    nZeroes = 0
-    totValue = 0
-    for row in grid:
-        for elem in row:
-            if elem:
-                nTiles += 1
-                totValue += elem
-            else:
-                nZeroes += 1
-    return nZeroes + totValue*1.0 / nTiles
+                if elem:
+                    nTiles += 1
+                    totValue += elem
+                else:
+                    nZeroes += 1
+
+                if elem > maxTile:
+                    maxTile = elem
+
+                neighbours = []
+                if col-1 >= 0:
+                    neighbours.append(grid[row][col-1]) # Left
+                if col+1 < SIZE:
+                    neighbours.append(grid[row][col+1]) # Right
+                if row-1 >= 0:
+                    neighbours.append(grid[row-1][col]) # Up
+                if row+1 < SIZE:
+                    neighbours.append(grid[row+1][col]) # Down
+
+                if elem and elem in neighbours:
+                    nNeighbours += 1
 
 
+        if maxTile in [grid[0][0],grid[0][-1],grid[-1][0],grid[-1][-1]]:
+            cornerBonus = 3.0
+        else:
+            cornerBonus = 1.0
+
+        print nNeighbours, nZeroes, totValue*1.0/nTiles
+        return (nNeighbours*2 + nZeroes*2 + totValue*1.0 / nTiles)*cornerBonus
+
+game = Game()
+game.play()
 
 
